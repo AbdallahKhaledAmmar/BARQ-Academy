@@ -11,3 +11,4 @@ evidence/local/
 backups/
 *.dump
 first_run.log
+config/app.env
