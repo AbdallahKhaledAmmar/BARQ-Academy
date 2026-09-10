@@ -15,16 +15,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check docker compose config syntax
-        run: |
-          docker compose config > /dev/null
-          echo "docker-compose.yml syntax is valid."
-
       - name: Set up config/app.env from example (CI has no real secrets)
         run: |
           mkdir -p config
           cp config/app.env.example config/app.env
           echo "Created config/app.env for CI from the example template."
+
+      - name: Check docker compose config syntax
+        run: |
+          docker compose config > /dev/null
+          echo "docker-compose.yml syntax is valid."
 
       - name: Build all images
         run: docker compose build
