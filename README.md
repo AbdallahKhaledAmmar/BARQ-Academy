@@ -1,97 +1,173 @@
 <img src="assets/barq-logo.svg" alt="BARQ Systems" width="180">
 
-# DevOps Internship Task - Starter v2
+# BARQ Systems — DevOps Internship Assessment
 
-**Due date:** ____________________
+Fixed, tested, and documented deployment of a Flask API behind NGINX, backed by
+PostgreSQL and Redis. Full investigation is in `troubleshooting.md` and
+`log_analysis.md`; design rationale is in `decisions.md`; risk review is in
+`security_review.md`; AI tool usage is disclosed in `AI_USAGE.md`.
 
-**Time window:** 4 calendar days from the invitation email date/time.
+**Current state:** two app instances (`app-01`, `app-02`) on host port `8080`. A third
+instance and a live port change to `8090` are added during the recorded demo, per the
+assessment brief — see `docs/EVIDENCE_INDEX.md` for the final committed state.
 
-Read [the task](assessment/TASK.md), then [the API contract](assessment/APPLICATION.md).
-Everyone receives this same release. The environment is intentionally broken.
-Hidden issue types and count are not disclosed. Investigate this project; do not replace it.
+## Prerequisites
 
-## Included
+- Linux or WSL2, Git, Docker with Compose
+- Recommended: 2 CPU cores, 4 GB free RAM, 3 GB free disk
 
-- Flask API, PostgreSQL, Redis, Docker and NGINX starter files.
-- Three historical logs, a question template and documentation templates.
-- App-only tests and a recorded challenge script.
-- Unimplemented validation, failure-test and backup/restore placeholders.
-
-Use synthetic lab accounts/data only. Supplied values are for this disposable exercise,
-never for real services. Keep the lab on your local machine; do not expose it publicly.
-
-## Before you start
-
-- Linux or WSL2, Python 3.12, Git and Docker with Compose.
-- Docker Desktop must use Linux containers. Run shell scripts in Linux/WSL.
-- Suggested capacity: 2 CPU cores, 4 GB free RAM and 3 GB free disk, plus Docker overhead.
-- Internet for first downloads and GitHub. No cloud account or paid registry required.
-- Use a machine where container names app-01, app-02, nginx, postgres and redis are unused.
-  Do not delete someone else's containers to free those names.
-- Intended public port: 8080 before the video, 8090 after the live change.
-  If either is occupied, ask the organizer for a documented workstation exception.
-
-## Start
-
-Clone the supplied Git bundle/repository. Keep both release commits and the v2 baseline tag.
-Set your own Git name/email before making changes.
-
-From the repository root:
+## Setup
 
 ```bash
-git status
-git log -2 --oneline
-cp .env.example .env
-docker version
-docker compose version
-docker compose -p barq-assessment up --build -d
-docker compose -p barq-assessment ps -a
-docker compose -p barq-assessment logs --no-color
+git clone https://github.com/AbdallahKhaledAmmar/BARQ-Academy.git
+cd BARQ-Academy
+cp config/app.env.example config/app.env   # then set the real Postgres password to match
+                                            # docker-compose.yml's POSTGRES_PASSWORD
+cp .env.example .env                       # optional: override PUBLIC_PORT
 ```
 
-The initial environment is not expected to pass. Record what actually happens.
-The intended URL is http://127.0.0.1:8080; do not assume the starter configuration is correct.
+## Build and start
 
-App-only checks use fake dependencies, not real SQL/Redis or Docker networking:
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+Wait for all five services (`app-01`, `app-02`, `nginx`, `postgres`, `redis`) to show
+`(healthy)`. Then confirm:
+
+```bash
+curl http://localhost:8080/ready
+```
+
+## Test the endpoints
+
+```bash
+curl -i http://localhost:8080/
+curl -i http://localhost:8080/health
+curl -i http://localhost:8080/ready
+curl -i http://localhost:8080/instance
+curl -X POST http://localhost:8080/records -H "Content-Type: application/json" -d '{"title":"example"}'
+curl -i http://localhost:8080/records
+curl -i http://localhost:8080/counter
+```
+
+Confirm both backends serve traffic through NGINX:
+
+```bash
+for i in $(seq 1 20); do curl -s http://localhost:8080/instance | grep -o '"instance_id":"[^"]*"'; done | sort | uniq -c
+```
+
+## Automated validation
+
+```bash
+chmod +x validate.sh
+./validate.sh
+echo "Exit code: $?"
+```
+
+Runs 13 checks (public access, all endpoints, both backend identities, PostgreSQL/Redis
+readiness, and confirms PostgreSQL/Redis ports are NOT reachable from the host). Exits
+non-zero on any failure.
+
+## Failure test
+
+```bash
+python3 failure_test.py
+echo "Exit code: $?"
+```
+
+Stops `app-01`, samples traffic during the outage (proves `app-02` keeps the service
+available), restarts `app-01`, waits for it to become healthy again, and confirms it
+serves requests once more.
+
+## Backup and restore
+
+```bash
+./backup.sh          # creates backups/barq_tasks_<timestamp>.dump
+./restore.sh          # creates a record, backs it up, recreates containers, proves
+                       # the record survives, and restores the dump into a scratch
+                       # database to prove the backup file itself is valid
+```
+
+## Persistence proof (manual)
+
+```bash
+curl -X POST http://localhost:8080/records -H "Content-Type: application/json" -d '{"title":"persistence test"}'
+docker compose down        # no -v — this keeps the named volumes
+docker compose up -d
+curl http://localhost:8080/records   # the record is still there
+```
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push and pull request: checkout, syntax check,
+build, start, wait for readiness, run `validate.sh`. See the Actions tab for the latest run.
+
+## App-only unit tests (no Docker required)
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
+deactivate
 ```
 
-## Your work
-
-- Complete [assessment/TASK.md](assessment/TASK.md).
-- Implement validate.py, failure_test.py, backup.sh and restore.sh, or documented equivalents.
-  Placeholders deliberately exit 2; they are unfinished deliverables, not validation evidence.
-- Create .github/workflows/ci.yml yourself.
-- Complete the root report templates and docs/EVIDENCE_INDEX.md.
-- Add architecture.png or architecture.pdf.
-- Replace this README with copyable setup/build/run/test/failure/backup/restore/cleanup commands.
-- Commit as you work. Do not commit real secrets, backups, virtual environments or challenge state.
-
-## Recorded challenge
-
-Use the supplied video_challenge.sh unchanged. Read its code if needed; do not run it early.
-After repairing the environment, run it once, for the first time in the video working copy,
-during the continuous 12-18 minute recording. The script requires healthy services, both
-initial instances and the target network layout. Preflight failures make no runtime changes.
+## Cleanup
 
 ```bash
-./video_challenge.sh
+docker compose down          # stops containers, keeps named volumes
+docker compose down -v       # also removes named volumes (only when lab data is no longer needed)
 ```
 
-If you deliberately changed the project name, pass --project YOUR_PROJECT.
-An organizer-approved alternate local URL can be passed with --url http://127.0.0.1:PORT.
-The script touches only matching Compose-owned lab containers/networks.
-Keep the receipt in .assessment/challenge.json for the evidence index. Do not delete the
-one-run marker to retry. A local marker is not tamper-proof; ownership is judged from evidence.
-Do not use docker compose down to reset the runtime challenge.
+Avoid `docker system prune` — it affects unrelated Docker resources on your machine.
 
-## Stop safely
+## Answers to the required questions
 
-Outside the recorded challenge, docker compose -p barq-assessment down stops this lab.
-Do not use --volumes during persistence tests. Avoid global Docker prune/cleanup commands.
-Back up anything you need before removing containers; investigate whether data actually persists.
+**What failed first? What proved the cause? Which failed attempt taught you something?**
+The healthcheck path mismatch (`/healthz` vs `/health`) failed first — containers stuck
+`unhealthy` forever. Proved by comparing the Compose healthcheck command against the
+actual Flask routes. The most instructive failed attempt: after fixing the NGINX
+listen-port mismatch, a `docker compose up -d` didn't apply the change, because
+`nginx.conf` is a read-only bind mount only read at container start — a plain restart
+was needed. Full detail in `troubleshooting.md`.
+
+**What patterns did the logs reveal? How did you avoid double-counting requests?**
+Two incidents: a full app-02 outage (`connect() failed`, ~3 minutes, app-01 kept the
+service available), and a narrower `/records`-only timeout affecting both instances
+(pointing at a slow Postgres query rather than an instance crash). Two duplicate log
+lines and one truncated line were found and excluded before computing any counts —
+all counts are deduplicated by `request_id`, treating `access.log` as the source of
+truth for "did a request happen." Full detail in `log_analysis.md`.
+
+**How do requests flow? Why these ports, networks and readiness checks?**
+Client → NGINX (`:8080` host-published) → `app-01`/`app-02` (`frontend` network) →
+PostgreSQL/Redis (`backend` network, `internal: true`, no host ports). `/health` proves
+the Flask process is alive; `/ready` proves PostgreSQL and Redis are actually reachable
+— the two are intentionally different so a process-alive-but-dependency-down state is
+visible. See `architecture.png` and `decisions.md`.
+
+**Why these timeouts, retries, restart settings and resource limits?**
+Short connect/read timeouts on both the Postgres connection and NGINX's proxy prevent
+a slow dependency from holding a request indefinitely. `proxy_next_upstream off` is a
+deliberate choice, not a default — see `decisions.md` entry 1. Resource limits are
+sized for this lab's scale, not load-tested — see `decisions.md` entry 3.
+
+**When should validation fail? What does green CI prove, or not prove?**
+`validate.sh` fails whenever any endpoint returns the wrong status, either backend goes
+unseen across 20 sampled requests, a dependency isn't ready, or a supposedly-blocked
+host port (`15432`, `16379`) is actually reachable. A green CI run proves the checked
+behaviors held at that moment in GitHub's environment — it does not prove production
+load handling, long-term reliability, or security beyond what's explicitly checked.
+
+**Which single points of failure remain? How would you fix them in production?**
+Single NGINX instance, single Postgres instance (manual/unscheduled backups), single
+Redis instance, and `proxy_next_upstream off` meaning a request routed to a down
+backend fails outright rather than retrying. All documented with production fixes in
+`security_review.md` and `decisions.md`.
+
+**What would you improve? How did you verify AI-assisted work?**
+See `AI_USAGE.md` for full disclosure and verification method. Production improvements
+are listed throughout `security_review.md` (secrets management, TLS, centralized
+logging/monitoring, database replication, scheduled backups).
