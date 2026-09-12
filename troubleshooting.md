@@ -205,3 +205,237 @@ recreation. Must be fixed before the Part 3 persistence test (mount the named vo
   from approximately 11:05:02 through at least 11:07:52, while app-01 (172.23.0.11) maintained
   100% availability throughout — evidence that NGINX load balancing kept the service available
   during a single-backend outage.
+
+## Issue 7: NGINX had no healthcheck, blocked video_challenge.sh preflight
+
+**Symptom:** Running `./video_challenge.sh` in a rehearsal clone failed immediately with
+`Challenge stopped: Repair the environment first: every service must be healthy and unpaused`,
+even though `docker compose ps` showed nginx as `Up` with no errors.
+
+**Hypothesis:** The challenge script's preflight requires every service to report a Docker
+health status of `healthy`. NGINX may not have a healthcheck defined at all, so it has no
+health status to check against.
+
+**Commands:**
+```
+docker inspect nginx --format '{{json .State.Health}}'
+docker compose ps
+```
+
+**Result:** `docker inspect` returned `null` for nginx's health — confirming no healthcheck
+was configured, while all four other services correctly showed `(healthy)`.
+
+**Root cause:** `docker-compose.yml`'s `nginx` service had no `healthcheck:` block at all,
+unlike every other service in the file.
+
+**Fix:**
+```
+healthcheck:
+  test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:81/"]
+  interval: 5s
+  timeout: 3s
+  retries: 3
+  start_period: 5s
+```
+Added under the `nginx` service, using `wget` (already present in the `nginx:alpine` image)
+to confirm NGINX itself responds to a request.
+
+**Retest evidence:** `docker compose ps` showed nginx as `(healthy)` alongside the other
+four services. Rerunning `./video_challenge.sh` in the rehearsal clone passed this
+precondition and moved on to the next check.
+
+---
+
+## Issue 8: NGINX was connected to the backend network, violating network isolation
+
+**Symptom:** After fixing Issue 7, `./video_challenge.sh` still failed preflight, this time
+with `Challenge stopped: Complete the required network isolation before recording`.
+
+**Hypothesis:** The brief requires "block direct NGINX access to PostgreSQL/Redis" — NGINX
+may still be connected to the `backend` network alongside Postgres and Redis, even though
+functionally nothing had broken (NGINX never actually queries either service directly, so
+this gap was invisible to `validate.sh` and manual endpoint testing).
+
+**Commands:**
+```
+docker inspect nginx --format '{{json .NetworkSettings.Networks}}'
+grep -n "networks:" docker-compose.yml
+```
+
+**Result:** Confirmed nginx was attached to both `barq-assessment_frontend` and
+`barq-assessment_backend`. `docker-compose.yml` line 79 showed the nginx service's
+`networks: [frontend, backend]` — nginx should only need `frontend` to reach app-01/app-02.
+
+**Root cause:** NGINX's service definition included `backend` in its `networks:` list
+unnecessarily. This didn't cause any functional failure (NGINX only ever proxies to the
+apps, never queries Postgres/Redis itself), which is exactly why it went unnoticed by
+`validate.sh` and manual testing — a real illustration of why isolation must be checked
+explicitly, not inferred from "nothing looks broken."
+
+**Fix:**
+```
+sed -i '79s/networks: \[frontend, backend\]/networks: [frontend]/' docker-compose.yml
+```
+
+**Retest evidence:** Rebuilt and reran `validate.sh` — all 13 checks still passed,
+confirming NGINX still correctly reaches app-01/app-02 over `frontend` while no longer
+having any path to `backend`. Reran `./video_challenge.sh` in the rehearsal clone, which
+passed preflight entirely and applied a real fault (redis disconnected from the backend
+network), diagnosed and fixed via `docker network inspect` + `docker network connect
+barq-assessment_backend redis`.
+
+## Issue 7: NGINX had no healthcheck, blocked video_challenge.sh preflight
+
+**Symptom:** Running `./video_challenge.sh` in a rehearsal clone failed immediately with
+`Challenge stopped: Repair the environment first: every service must be healthy and unpaused`,
+even though `docker compose ps` showed nginx as `Up` with no errors.
+
+**Hypothesis:** The challenge script's preflight requires every service to report a Docker
+health status of `healthy`. NGINX may not have a healthcheck defined at all, so it has no
+health status to check against.
+
+**Commands:**
+```
+docker inspect nginx --format '{{json .State.Health}}'
+docker compose ps
+```
+
+**Result:** `docker inspect` returned `null` for nginx's health — confirming no healthcheck
+was configured, while all four other services correctly showed `(healthy)`.
+
+**Root cause:** `docker-compose.yml`'s `nginx` service had no `healthcheck:` block at all,
+unlike every other service in the file.
+
+**Fix:**
+```
+healthcheck:
+  test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:81/"]
+  interval: 5s
+  timeout: 3s
+  retries: 3
+  start_period: 5s
+```
+Added under the `nginx` service, using `wget` (already present in the `nginx:alpine` image)
+to confirm NGINX itself responds to a request.
+
+**Retest evidence:** `docker compose ps` showed nginx as `(healthy)` alongside the other
+four services. Rerunning `./video_challenge.sh` in the rehearsal clone passed this
+precondition and moved on to the next check.
+
+---
+
+## Issue 8: NGINX was connected to the backend network, violating network isolation
+
+**Symptom:** After fixing Issue 7, `./video_challenge.sh` still failed preflight, this time
+with `Challenge stopped: Complete the required network isolation before recording`.
+
+**Hypothesis:** The brief requires "block direct NGINX access to PostgreSQL/Redis" — NGINX
+may still be connected to the `backend` network alongside Postgres and Redis, even though
+functionally nothing had broken (NGINX never actually queries either service directly, so
+this gap was invisible to `validate.sh` and manual endpoint testing).
+
+**Commands:**
+```
+docker inspect nginx --format '{{json .NetworkSettings.Networks}}'
+grep -n "networks:" docker-compose.yml
+```
+
+**Result:** Confirmed nginx was attached to both `barq-assessment_frontend` and
+`barq-assessment_backend`. `docker-compose.yml` line 79 showed the nginx service's
+`networks: [frontend, backend]` — nginx should only need `frontend` to reach app-01/app-02.
+
+**Root cause:** NGINX's service definition included `backend` in its `networks:` list
+unnecessarily. This didn't cause any functional failure (NGINX only ever proxies to the
+apps, never queries Postgres/Redis itself), which is exactly why it went unnoticed by
+`validate.sh` and manual testing — a real illustration of why isolation must be checked
+explicitly, not inferred from "nothing looks broken."
+
+**Fix:**
+```
+sed -i '79s/networks: \[frontend, backend\]/networks: [frontend]/' docker-compose.yml
+```
+
+**Retest evidence:** Rebuilt and reran `validate.sh` — all 13 checks still passed,
+confirming NGINX still correctly reaches app-01/app-02 over `frontend` while no longer
+having any path to `backend`. Reran `./video_challenge.sh` in the rehearsal clone, which
+passed preflight entirely and applied a real fault (redis disconnected from the backend
+network), diagnosed and fixed via `docker network inspect` + `docker network connect
+barq-assessment_backend redis`.
+
+## Issue 7: NGINX had no healthcheck, blocked video_challenge.sh preflight
+
+**Symptom:** Running `./video_challenge.sh` in a rehearsal clone failed immediately with
+`Challenge stopped: Repair the environment first: every service must be healthy and unpaused`,
+even though `docker compose ps` showed nginx as `Up` with no errors.
+
+**Hypothesis:** The challenge script's preflight requires every service to report a Docker
+health status of `healthy`. NGINX may not have a healthcheck defined at all, so it has no
+health status to check against.
+
+**Commands:**
+```
+docker inspect nginx --format '{{json .State.Health}}'
+docker compose ps
+```
+
+**Result:** `docker inspect` returned `null` for nginx's health — confirming no healthcheck
+was configured, while all four other services correctly showed `(healthy)`.
+
+**Root cause:** `docker-compose.yml`'s `nginx` service had no `healthcheck:` block at all,
+unlike every other service in the file.
+
+**Fix:**
+```
+healthcheck:
+  test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:81/"]
+  interval: 5s
+  timeout: 3s
+  retries: 3
+  start_period: 5s
+```
+Added under the `nginx` service, using `wget` (already present in the `nginx:alpine` image)
+to confirm NGINX itself responds to a request.
+
+**Retest evidence:** `docker compose ps` showed nginx as `(healthy)` alongside the other
+four services. Rerunning `./video_challenge.sh` in the rehearsal clone passed this
+precondition and moved on to the next check.
+
+---
+
+## Issue 8: NGINX was connected to the backend network, violating network isolation
+
+**Symptom:** After fixing Issue 7, `./video_challenge.sh` still failed preflight, this time
+with `Challenge stopped: Complete the required network isolation before recording`.
+
+**Hypothesis:** The brief requires "block direct NGINX access to PostgreSQL/Redis" — NGINX
+may still be connected to the `backend` network alongside Postgres and Redis, even though
+functionally nothing had broken (NGINX never actually queries either service directly, so
+this gap was invisible to `validate.sh` and manual endpoint testing).
+
+**Commands:**
+```
+docker inspect nginx --format '{{json .NetworkSettings.Networks}}'
+grep -n "networks:" docker-compose.yml
+```
+
+**Result:** Confirmed nginx was attached to both `barq-assessment_frontend` and
+`barq-assessment_backend`. `docker-compose.yml` line 79 showed the nginx service's
+`networks: [frontend, backend]` — nginx should only need `frontend` to reach app-01/app-02.
+
+**Root cause:** NGINX's service definition included `backend` in its `networks:` list
+unnecessarily. This didn't cause any functional failure (NGINX only ever proxies to the
+apps, never queries Postgres/Redis itself), which is exactly why it went unnoticed by
+`validate.sh` and manual testing — a real illustration of why isolation must be checked
+explicitly, not inferred from "nothing looks broken."
+
+**Fix:**
+```
+sed -i '79s/networks: \[frontend, backend\]/networks: [frontend]/' docker-compose.yml
+```
+
+**Retest evidence:** Rebuilt and reran `validate.sh` — all 13 checks still passed,
+confirming NGINX still correctly reaches app-01/app-02 over `frontend` while no longer
+having any path to `backend`. Reran `./video_challenge.sh` in the rehearsal clone, which
+passed preflight entirely and applied a real fault (redis disconnected from the backend
+network), diagnosed and fixed via `docker network inspect` + `docker network connect
+barq-assessment_backend redis`.
