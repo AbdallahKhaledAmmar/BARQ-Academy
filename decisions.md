@@ -136,3 +136,36 @@ instances, not a scalable replica set.
 **Limitation:** Adding a third instance live during the video (as the brief
 requires) needs a new named service entry, not a `--scale` flag — planned for
 directly in `docker-compose.yml` before recording.
+
+## 7. Restart policy: `unless-stopped` on every service
+
+**Decision:** Changed the shared app anchor from `restart: "no"` (the starter default)
+to `restart: unless-stopped`, and added the same policy to Postgres, Redis, and NGINX,
+which had no restart policy configured at all.
+
+**Assumption:** An unexpected container crash (process error, OOM, host reboot) should
+recover automatically; an intentional `docker compose stop` (as used by `failure_test.py`
+and by hand during the video's live failure demo) should stay stopped until explicitly
+started again.
+
+**Alternative considered:** `restart: always` (restarts even after an intentional stop,
+which would break `failure_test.py`'s ability to keep a backend down on purpose), or
+leaving the default `"no"` (no automatic recovery at all).
+
+**Trade-off:** `unless-stopped` gives real resilience against unexpected failures without
+fighting deliberate test/demo actions. Verified this doesn't interfere with the failure
+test: `docker compose stop app-01` correctly kept it down for the full test duration, and
+`docker compose start app-01` correctly brought it back — `unless-stopped` does not
+auto-restart a container that was stopped on purpose.
+
+**Evidence:** Re-ran `failure_test.py` after this change — result unchanged (PASS),
+confirming the restart policy doesn't interfere with intentional stop/start.
+
+**Production improvement:** Combine with proper health-based orchestration (e.g.
+Kubernetes liveness/readiness probes with pod restarts) rather than relying on Docker
+Compose's restart policy alone, which has no visibility into application-level health
+beyond the container process being alive.
+
+**Limitation:** `unless-stopped` does not help if the underlying host itself goes down,
+or if every instance of a service fails simultaneously — it only recovers individual
+container crashes on a running host.
