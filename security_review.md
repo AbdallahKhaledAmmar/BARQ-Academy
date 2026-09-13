@@ -92,3 +92,47 @@ noting here: `app-02` was configured with `INSTANCE_ID: "app-01"`, meaning the
 served a request — a monitoring/observability integrity issue if left in place
 (logs and metrics attributed to the wrong instance). Fixed by correcting the
 environment variable.
+
+## 13. [Fixed] Secret baked into image layer via unnecessary Dockerfile COPY
+
+**Risk and evidence:** The Dockerfile included `COPY config/app.env /srv/app.env`,
+copying the file containing the real (synthetic-lab) Postgres credential into the
+built image. Confirmed via `grep -rn "app.env" app/` that no application code actually
+reads `/srv/app.env` — the app only uses `os.getenv()`, which Compose already populates
+at runtime via `env_file: ./config/app.env`. The `COPY` served no functional purpose and
+only meant the credential was retrievable from the image itself (e.g. via `docker
+history` or `docker save`), independent of container access or `.gitignore`.
+
+**Implemented fix:** Removed the `COPY config/app.env /srv/app.env` line from the
+Dockerfile. Re-ran the full verification suite (`validate.sh`, `failure_test.py`)
+after the change — both passed with no regression, confirming the app never needed
+the file baked into the image.
+
+**Production follow-up:** For a real secret, this would also warrant checking whether
+older, already-pushed image layers (if ever published to a registry) still contain
+the credential in their history — a removed `COPY` in a new build does not retroactively
+clean prior image layers already distributed.
+
+## 14. [Fixed/documented] NGINX `max_fails=0` disables passive failure detection
+
+**Risk and evidence:** The NGINX upstream pool is configured with `max_fails=0` on
+both application servers, which explicitly disables NGINX's own passive health
+tracking for that server — meaning NGINX never marks a backend as "failed" and
+temporarily stops routing to it, regardless of how many consecutive errors it returns.
+
+**Impact:** Combined with `proxy_next_upstream off` (see `decisions.md` #1), this means
+a downed backend continues to receive its full share of round-robin traffic
+indefinitely, with every one of those requests failing, until the container's own
+Docker healthcheck-driven restart (or a human) intervenes — NGINX itself never adapts.
+
+**Implemented fix:** None applied — documented here as an accepted, understood
+trade-off alongside the `proxy_next_upstream off` decision, not a bug. Together
+these two settings prioritize deterministic, visible failure over hidden automatic
+rerouting, consistent with the reasoning in `decisions.md` #1.
+
+**Production follow-up:** Set a real `max_fails` (e.g. 3) with a `fail_timeout`
+window, in combination with a considered `proxy_next_upstream` policy scoped to
+idempotent methods only, so NGINX both stops routing to a confirmed-bad backend
+and safely retries GET requests without risking duplicate writes on POST.
+
+**How to verify:** `grep -n "max_fails" nginx/nginx.conf`
